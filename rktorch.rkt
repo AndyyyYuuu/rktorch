@@ -1,10 +1,10 @@
 ;; The first three lines of this file were inserted by DrRacket. They record metadata
 ;; about the language level of this file in a form that our tools can easily process.
-#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname numrkt) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
-;; NumRkt
+#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname rktorch) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
+
 
 ;; NdArr processing functions
-
+;; ~~~~~~~~~~
 
 ;; An NdArr is one of
 ;; * Num
@@ -63,7 +63,8 @@
 (define (ndarr/to-tensor ndarr)
   (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'none '() (lambda (x) x)))
 
-
+;; Tensor functions
+;; ~~~~~~~~~~
 
 ;; An Op is (anyof 'matmul 'tanh 'relu 'add 'none)
 
@@ -97,17 +98,6 @@
 (define (tensor/leaf? t)
   (symbol=? 'none (tensor/prev-op t)))
 
-(define (optim/step t step-size)
-  (mk-tensor (cond
-               [(tensor/leaf? t) (ndarr/elementwise +
-                                (tensor/ndarr t)
-                                (ndarr/elementwise * (ndarr/fill (ndarr/shape (tensor/ndarr t)) (- step-size)) (tensor/grad t)))]
-               [else (tensor/ndarr t)])
-             (tensor/grad t)
-             (tensor/prev-op t)
-             (map (lambda (x) (optim/step x step-size)) (tensor/presyns t))
-             (tensor/backward t)))
-
 (define (tensor/new-ndarr t value)
   (mk-tensor value (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/backward t)))
 
@@ -130,6 +120,21 @@
 
 
 
+
+;; Optimization functions
+;; ~~~~~~~~~~
+
+(define (optim/step t step-size)
+  (mk-tensor (cond
+               [(tensor/leaf? t) (ndarr/elementwise +
+                                (tensor/ndarr t)
+                                (ndarr/elementwise * (ndarr/fill (ndarr/shape (tensor/ndarr t)) (- step-size)) (tensor/grad t)))]
+               [else (tensor/ndarr t)])
+             (tensor/grad t)
+             (tensor/prev-op t)
+             (map (lambda (x) (optim/step x step-size)) (tensor/presyns t))
+             (tensor/backward t)))
+
 (define (optim/backward t)
   ((tensor/backward t) (tensor/new-grad t (ndarr/fill (ndarr/shape (tensor/ndarr t)) 1))))
              ;(lambda (t)
@@ -143,7 +148,6 @@
     [else (optim/loop (optim/step (optim/backward t) step-size) (sub1 n) step-size)]))
 (define toy-graph (tensor/add (ndarr/to-tensor '((1 2) (3 4))) (ndarr/to-tensor '((1 1) (1 1)))))
 
-
 (optim/backward toy-graph)
 '------
 (optim/backward (optim/step (optim/backward toy-graph) 0.01))
@@ -151,3 +155,31 @@
 (optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
 '------
 (optim/loop toy-graph 20 0.01)
+
+(define random/uniform/precision 1000)
+
+(define (random/uniform a b)
+  (+ a (* (- b a) (/ (random random/uniform/precision) random/uniform/precision))))
+
+(define noise/max-drift 0.05)
+
+(define (random/add-noise n)
+  (+ n
+     (* 1/2 (random/uniform (- noise/max-drift) noise/max-drift))
+     (* 1/2 (random/uniform (- noise/max-drift) noise/max-drift))))
+
+(define (data/synthesize n)
+  (local
+    [(define (loop n acc)
+       
+       (cond
+         [(zero? n) acc]
+         [else (loop (sub1 n) (cons (local
+                                      [(define X_x (random/uniform -1 1))
+                                       (define X_y (random/uniform -1 1))
+                                       (define Y (cond
+                                                   ;; VERY non-linear
+                                                   [(< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x)))))) 1]
+                                                   [else -1]))]
+                                      (list (list (random/add-noise X_x) (random/add-noise X_y)) Y)) acc))]))]
+    (loop n empty)))
