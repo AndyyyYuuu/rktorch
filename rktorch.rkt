@@ -1,17 +1,32 @@
 ;; The first three lines of this file were inserted by DrRacket. They record metadata
 ;; about the language level of this file in a form that our tools can easily process.
-#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname rktorch) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
+#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname rktorch) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t quasiquote repeating-decimal #f #t none #f () #f)))
 
+(define (tanh x)
+  (/ (- 1 (exp (* -2 x))) (+ 1 (exp (* -2 x)))))
+
+(define (tanh-deriv x)
+  (- 1 (expt (tanh x) 2)))
+
+(define (list/nth n lst)
+  (cond
+    [(zero? n) (first lst)]
+    [else (list/nth (sub1 n) (rest lst))]))
 
 ;; NdArr processing functions
 ;; ~~~~~~~~~~
+
+;; For simplicity, I think we're gonna use the
+;; innermost / last dimension as the batch dimension.
 
 ;; An NdArr is one of
 ;; * Num
 ;; * (listof NdArr), with all elements of the same shape
 
+;; A Shape is a (listof Nat)
+
 ;; Gets the shape of the NdArr
-;; ndarr/shape: NdArr -> (listof Nat)
+;; ndarr/shape: NdArr -> Shape
 (define (ndarr/shape x)
   (cond
     [(number? x) empty]
@@ -32,6 +47,11 @@
     [(empty? shape) x]
     [else (build-list (first shape) (lambda (i) (ndarr/fill (rest shape) x)))]))
 
+(define (ndarr/map op t)
+  (cond
+    [(number? t) (op t)]
+    [else (map (lambda (x) (ndarr/map op x)) t)]))
+
 ;; Operates on two NdArrs element-wise
 ;; ndarr/elementwise: (Num -> Num) NdArr NdArr -> NdArr
 ;; Requires: the ndarrs are the same shape
@@ -39,6 +59,43 @@
   (cond
     [(and (number? t1) (number? t2)) (op t1 t2)]
     [else (map (lambda (a b) (ndarr/elementwise op a b)) t1 t2)]))
+
+(define (ndarr/get idx x)
+  (cond
+    [(empty? idx) x]
+    [else (ndarr/get (rest idx) (list/nth (first idx) x))]))
+
+;; Builds an NdArr of the given Shape,
+;; and populates it with the outputs of
+;; the given function taking index as input.
+;; ndarr/build: Shape (Shape -> Any) -> NdArr
+(define (ndarr/build shape fn)
+  (cond
+    [(empty? shape) (fn empty)]
+    [else (build-list (first shape)
+                      (lambda (i) (ndarr/build (rest shape)
+                                               (lambda (idx) (fn (cons i idx))))))]))
+;; Takes the dot product of two NdArrs
+;; ndarr/dot: NdArr NdArr -> Ndarr
+;; Requires: (first (shape v)) = (first (shape w))
+(define (ndarr/dot v w)
+  (cond
+    [(empty? (rest v)) (ndarr/elementwise * (first v) (first w))] ; Not pretty but I can't broadcast + 0
+    [else (ndarr/elementwise + (ndarr/elementwise * (first v) (first w)) (ndarr/dot (rest v) (rest w)))]))
+
+(define (ndarr/vm-mul v m^T)
+  (map (lambda (r) (ndarr/dot v r)) m^T))
+
+(check-expect (ndarr/dot '((1 2) (3 2) (4 5)) '((2 2) (4 4) (0 1))) '(14 17))
+
+(check-expect (ndarr/build '(4 4) (lambda (x) (if (< (first x) (second x)) 0 1)))
+              '((1 0 0 0)
+                (1 1 0 0)
+                (1 1 1 0) ; look ma, causal attention mask!
+                (1 1 1 1)))
+
+(check-expect (ndarr/vm-mul '(1 -1 2) '((1 -1 0) (3 -2 1))) '(2 7))
+
 
 ;; Flattens the NdArr
 ;; ndarr/flatten: NdArr -> NdArr
@@ -52,13 +109,12 @@
                 (list (list 1 2) (list 4 3) (list 1 0))))
 (define B (ndarr/fill (list 3 3 2) 1))
 
-
+(check-expect (ndarr/flatten A) '(2 3 7 8 1 9 1 9 1 0 3 7 1 2 4 3 1 0))
 (check-expect (ndarr/shape A) (list 3 3 2))
 
-(check-expect (ndarr/elementwise + A B) (list
- (list (list 3 4) (list 8 9) (list 2 10))
- (list (list 2 10) (list 2 1) (list 4 8))
- (list (list 2 3) (list 5 4) (list 2 1))))
+(check-expect (ndarr/elementwise + A B) '(((3 4 ) (8 9) (2 10))
+                                          ((2 10) (2 1) (4 8 ))
+                                          ((2 3 ) (5 4) (2 1 ))))
 
 ;; Leaf node construction
 (define (tensor/init ndarr)
