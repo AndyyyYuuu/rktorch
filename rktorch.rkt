@@ -60,8 +60,9 @@
  (list (list 2 10) (list 2 1) (list 4 8))
  (list (list 2 3) (list 5 4) (list 2 1))))
 
-(define (ndarr/to-tensor ndarr)
-  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'none '() (lambda (x) x)))
+;; Leaf node construction
+(define (tensor/init ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'none '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
 
 ;; Tensor functions
 ;; ~~~~~~~~~~
@@ -70,8 +71,12 @@
 
 ;; A Tensor is a (listof NdArr NdArr Op (listof Tensor) Tensor ())
 
-(define (mk-tensor ndarr grad prev-op presyns backward)
-    (list ndarr grad prev-op presyns backward))
+(define (mk-tensor ndarr grad prev-op presyns forward backward)
+  (cond [(and (symbol? prev-op) (list? presyns) (or (empty? presyns) (and (list? (first presyns)) (list? (second presyns)))))
+         (list ndarr grad prev-op presyns forward backward)]))
+
+(define (tensor/copy t)
+  (mk-tensor (tensor/ndarr t) (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
 
 
 (define (tensor/ndarr tensor)
@@ -86,20 +91,23 @@
 (define (tensor/presyns tensor)
   (fourth tensor))
 
-(define (tensor/backward tensor)
+(define (tensor/forward tensor)
   (fifth tensor))
 
+(define (tensor/backward tensor)
+  (sixth tensor))
+
 (define (tensor/new-grad t grad)
-  (mk-tensor (tensor/ndarr t) grad (tensor/prev-op t) (tensor/presyns t) (tensor/backward t)))
+  (mk-tensor (tensor/ndarr t) grad (tensor/prev-op t) (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
 
 (define (tensor/new-presyns t presyns)
-  (mk-tensor (tensor/ndarr t) (tensor/grad t) (tensor/prev-op t) presyns (tensor/backward t)))
+  (mk-tensor (tensor/ndarr t) (tensor/grad t) (tensor/prev-op t) presyns (tensor/forward t) (tensor/backward t)))
 
 (define (tensor/leaf? t)
   (symbol=? 'none (tensor/prev-op t)))
 
 (define (tensor/new-ndarr t value)
-  (mk-tensor value (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/backward t)))
+  (mk-tensor value (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
 
 
 (define (tensor/add t1 t2)
@@ -107,6 +115,15 @@
              (ndarr/fill (ndarr/shape (tensor/ndarr t1)) 0)
              'add
              (list t1 t2)
+             (lambda (self)
+               (local [(define t1 ((tensor/forward (first (tensor/presyns self))) (first (tensor/presyns self))))
+                       (define t2 ((tensor/forward (second (tensor/presyns self))) (second (tensor/presyns self))))]
+                 (mk-tensor (ndarr/elementwise + (tensor/ndarr t1) (tensor/ndarr t2))
+                            (tensor/grad self)
+                            'add
+                            (list t1 t2)
+                            (tensor/forward self)
+                            (tensor/backward self))))
              ;; Tensor -> (listof Tensor)
              (lambda (out-t)
                (cond
@@ -115,10 +132,43 @@
                   (local
                     [(define t1 (first (tensor/presyns out-t)))
                      (define t2 (second (tensor/presyns out-t)))]
-                    (tensor/new-presyns out-t (list ((tensor/backward t1) (tensor/new-grad t1 (ndarr/elementwise + (tensor/grad t1) (tensor/grad out-t))))
-                                                    ((tensor/backward t2) (tensor/new-grad t2 (ndarr/elementwise + (tensor/grad t2) (tensor/grad out-t)))))))]))))
+                    (tensor/new-presyns out-t (list ((tensor/backward t1) (tensor/new-grad t1 (tensor/grad out-t)))
+                                                    ((tensor/backward t2) (tensor/new-grad t2 (tensor/grad out-t))))))]))))
+;((tensor/backward t1) (tensor/new-grad t1 (ndarr/elementwise + (tensor/grad t1) (tensor/grad out-t))))
+;((tensor/backward t2) (tensor/new-grad t2 (ndarr/elementwise + (tensor/grad t2) (tensor/grad out-t)))))))]))))
 
-
+;((tensor/backward t1) (tensor/new-grad t1 (tensor/grad out-t)))
+;((tensor/backward t2) (tensor/new-grad t2 (tensor/grad out-t))))))]))))
+;(define (tensor/tanh t)
+;  (mk-tensor (ndarr/map tanh (tensor/ndarr t)) 
+;             (ndarr/fill (ndarr/shape (tensor/ndarr t)) 0)
+;             'tanh
+;             (list t)
+;             ;; Tensor -> (listof Tensor)
+;             (lambda (out-t)
+;               (cond
+;                 [(tensor/leaf? out-t) out-t]
+;                 [else
+;                  (local
+;                    [(define t (first (tensor/presyns out-t)))]
+;                    (tensor/new-presyns out-t (list ((tensor/backward t) (tensor/new-grad t (ndarr/map tanh-deriv (tensor/grad out-t)))))))]))))
+;
+;
+;(define (tensor/mul t1 t2)
+;  (mk-tensor (ndarr/elementwise + (tensor/ndarr t1) (tensor/ndarr t2))
+;             (ndarr/fill (ndarr/shape (tensor/ndarr t1)) 0)
+;             'add
+;             (list t1 t2)
+;             ;; Tensor -> (listof Tensor)
+;             (lambda (out-t)
+;               (cond
+;                 [(tensor/leaf? out-t) out-t]
+;                 [else
+;                  (local
+;                    [(define t1 (first (tensor/presyns out-t)))
+;                     (define t2 (second (tensor/presyns out-t)))]
+;                    (tensor/new-presyns out-t (list ((tensor/backward t1) (tensor/new-grad t1 (ndarr/elementwise * (tensor/grad t2) (tensor/grad out-t))))
+;                                                    ((tensor/backward t2) (tensor/new-grad t2 (ndarr/elementwise * (tensor/grad t1) (tensor/grad out-t)))))))]))))
 
 
 ;; Optimization functions
@@ -133,28 +183,31 @@
              (tensor/grad t)
              (tensor/prev-op t)
              (map (lambda (x) (optim/step x step-size)) (tensor/presyns t))
+             (tensor/forward t)
              (tensor/backward t)))
 
 (define (optim/backward t)
   ((tensor/backward t) (tensor/new-grad t (ndarr/fill (ndarr/shape (tensor/ndarr t)) 1))))
-             ;(lambda (t)
-             ;  [(define c (tensor/presyns t))]
-             ;  (list (ndarr/elementwise * (tensor/ndarr t2) (tensor/))
+
+(define (optim/forward t)
+  ((tensor/forward t) t))
 
 
 (define (optim/loop t n step-size)
   (cond
     [(zero? n) t]
-    [else (optim/loop (optim/step (optim/backward t) step-size) (sub1 n) step-size)]))
-(define toy-graph (tensor/add (ndarr/to-tensor '((1 2) (3 4))) (ndarr/to-tensor '((1 1) (1 1)))))
+    [else (optim/loop (optim/step (optim/backward (optim/forward t)) step-size) (sub1 n) step-size)]))
+(define toy-graph (tensor/add (tensor/init '((0.1 -0.3) (0.5 0.3))) (tensor/init '((0.3 0.1) (-0.2 0.0)))))
 
 (optim/backward toy-graph)
-'------
+'------------------------------------------------
 (optim/backward (optim/step (optim/backward toy-graph) 0.01))
-'------
-(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
-'------
-(optim/loop toy-graph 20 0.01)
+'------------------------------------------------
+(optim/forward (optim/backward (optim/step (optim/backward toy-graph) 0.01)))
+'------------------------------------------------
+;(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
+;'------------------------------------------------
+(optim/loop toy-graph 20 0.1)
 
 (define random/uniform/precision 1000)
 
@@ -171,7 +224,6 @@
 (define (data/synthesize n)
   (local
     [(define (loop n acc)
-       
        (cond
          [(zero? n) acc]
          [else (loop (sub1 n) (cons (local
@@ -183,3 +235,5 @@
                                                    [else -1]))]
                                       (list (list (random/add-noise X_x) (random/add-noise X_y)) Y)) acc))]))]
     (loop n empty)))
+;(define train-set (data/synthesize 900))
+;(define test-set (data/synthesize 100))
