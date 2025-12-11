@@ -117,8 +117,12 @@
                                           ((2 3 ) (5 4) (2 1 ))))
 
 ;; Leaf node construction
-(define (tensor/init ndarr)
-  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'none '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+(define (tensor/new-param ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+
+;; 
+(define (tensor/new-input ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'input '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
 
 ;; Tensor functions
 ;; ~~~~~~~~~~
@@ -159,8 +163,15 @@
 (define (tensor/new-presyns t presyns)
   (mk-tensor (tensor/ndarr t) (tensor/grad t) (tensor/prev-op t) presyns (tensor/forward t) (tensor/backward t)))
 
+(define (tensor/param? t)
+  (symbol=? 'param (tensor/prev-op t)))
+
+(define (tensor/input? t)
+  (symbol=? 'input (tensor/prev-op t)))
+
 (define (tensor/leaf? t)
-  (symbol=? 'none (tensor/prev-op t)))
+  (or (symbol=? 'param (tensor/prev-op t))
+      (symbol=? 'input (tensor/prev-op t))))
 
 (define (tensor/new-ndarr t value)
   (mk-tensor value (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
@@ -230,9 +241,11 @@
 ;; Optimization functions
 ;; ~~~~~~~~~~
 
+(define optim/loss (lambda (y y-pred) y))
+
 (define (optim/step t step-size)
   (mk-tensor (cond
-               [(tensor/leaf? t) (ndarr/elementwise +
+               [(tensor/param? t) (ndarr/elementwise +
                                 (tensor/ndarr t)
                                 (ndarr/elementwise * (ndarr/fill (ndarr/shape (tensor/ndarr t)) (- step-size)) (tensor/grad t)))]
                [else (tensor/ndarr t)])
@@ -245,25 +258,36 @@
 (define (optim/backward t)
   ((tensor/backward t) (tensor/new-grad t (ndarr/fill (ndarr/shape (tensor/ndarr t)) 1))))
 
-(define (optim/forward t)
-  ((tensor/forward t) t))
+;; optim/forward: Tensor NdArr -> Tensor
+(define (optim/forward t input)
+  (local
+    [(define (replace-input t value)
+       (cond
+         [(tensor/input? t) (tensor/new-ndarr t value)]
+         [else (tensor/new-presyns t (map (lambda (x) (replace-input x value)) (tensor/presyns t)))]))]
+  ((tensor/forward t) (replace-input t input))))
 
 
-(define (optim/loop t n step-size)
+(define (optim/epoch t step-size dataset)
   (cond
-    [(zero? n) t]
-    [else (optim/loop (optim/step (optim/backward (optim/forward t)) step-size) (sub1 n) step-size)]))
-(define toy-graph (tensor/add (tensor/init '((0.1 -0.3) (0.5 0.3))) (tensor/init '((0.3 0.1) (-0.2 0.0)))))
+    [(empty? dataset) t]
+    [else
+     (local
+       [(define X (first (first dataset)))
+        (define y (second (first dataset)))]
+     (optim/epoch (optim/step (optim/backward (optim/loss (optim/forward t X) y)) step-size) step-size (rest dataset)))]))
+
+(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
 
 (optim/backward toy-graph)
 '------------------------------------------------
 (optim/backward (optim/step (optim/backward toy-graph) 0.01))
 '------------------------------------------------
-(optim/forward (optim/backward (optim/step (optim/backward toy-graph) 0.01)))
+(optim/forward (optim/backward (optim/step (optim/backward toy-graph) 0.01)) '((0 0) (0 0)))
 '------------------------------------------------
 ;(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
 ;'------------------------------------------------
-(optim/loop toy-graph 20 0.1)
+;(optim/loop toy-graph 100 0.1)
 
 (define random/uniform/precision 1000)
 
