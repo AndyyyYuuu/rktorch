@@ -93,12 +93,13 @@
     [else (ndarr/elementwise + (ndarr/elementwise * (first v) (first w)) (ndarr/dot (rest v) (rest w)))]))
 
 (define (ndarr/mse v1 v2)
-  (/ (foldr (lambda (x y) (ndarr/elementwise + x y))
+  (ndarr/elementwise / (foldr (lambda (x y) (ndarr/elementwise + x y))
             0
-            (map (lambda (a b) (ndarr/map sqr (ndarr/elementwise - a b))) v1 v2)) (length v1)))
+            (ndarr/elementwise (lambda (a b) (ndarr/map sqr (ndarr/elementwise - a b))) v1 v2)) (length v1)))
 
 (define (ndarr/vm-mul v m)
-  (map (lambda (r) (ndarr/dot v r)) m))
+  (cond [(= (length v) (length (first m)))
+         (map (lambda (r) (ndarr/dot v r)) m)]))
 
 (define (ndarr/outer-prod vi vj)
   (map (lambda (r) (map (lambda (c) (ndarr/elementwise * c r)) vj)) vi))
@@ -131,6 +132,7 @@
 ;                (list (list 1 2) (list 4 3) (list 1 0))))
 ;(define B (ndarr/fill (list 3 3 2) 1))
 ;
+
 (check-expect (ndarr/vm-mul '(1 -1 2) '((1 -1 0) (3 -2 1))) '(2 7))
 ;
 ;(check-expect (ndarr/flatten A) '(2 3 7 8 1 9 1 9 1 0 3 7 1 2 4 3 1 0))
@@ -397,7 +399,7 @@
   (+ a (* (- b a) (/ (+ (random random/uniform/precision) 1) random/uniform/precision))))
 
 (define (random/gaussian mean sd)
-  (+ mean (* sd (sqrt (* 2 (log (random/uniform 0 1)))) (cos (* 2 pi (random/uniform 0 1))))))
+  (+ mean (* sd (sqrt (* -2 (log (random/uniform 0 1)))) (cos (* 2 pi (random/uniform 0 1))))))
 
 (define noise/sd 0.03)
 
@@ -406,7 +408,7 @@
 
 (define (data/synthesize-batch n)
   (local
-    [(define (loop n acc-x acc-y)
+    [(define (loop n acc-xx acc-xy acc-y)
        (cond
          [(zero? n) (list acc-x acc-y)]
          [else (local
@@ -417,16 +419,25 @@
                               [(and (not (zero? X_x)) (< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x))))))) 1]
                               [else -1]))]
                  (loop (sub1 n)
-                       (cons (list (random/add-noise X_x) (random/add-noise X_y)) acc-x)
-                       (cons (list Y) acc-y)))]))]
-    (loop n empty empty)))
+                       (cons (random/add-noise X_x) acc-xx)
+                       (cons (random/add-noise X_y) acc-xy)
+                       (cons Y acc-y)))]))]
+    (loop n empty empty empty)))
 
 (define (data/synthesize n)
-  (build-list n (lambda (_) (data/synthesize-batch 16))))
-(define train-set (data/synthesize 90))
+  (build-list n (lambda (_) (data/synthesize-batch 1))))
+(define train-set (data/synthesize 10))
 ;(define test-set (data/synthesize 10))
-
+train-set
 (define model (tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
-                        (tensor/new-targ '(0))))
-
+                        (tensor/new-targ 0))) ; we're gonna need broadcasting for this kind of batch processing
+model
+;(optim/forward model '(#i0.8149676128848764
+;     #i0.5999207590704589
+;     #i0.8442857419868902
+;     #i0.7682431672814628
+;     #i-0.9443673067317068
+;     #i0.7887930213363239
+;     #i0.4116878432048962
+;     #i-0.43814750294244836) '(1 -1 -1 -1 1 1 -1 -1))
 (optim/epoch model 0.03 train-set empty)
