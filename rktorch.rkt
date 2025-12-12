@@ -75,6 +75,15 @@
     [else (build-list (first shape)
                       (lambda (i) (ndarr/build (rest shape)
                                                (lambda (idx) (fn (cons i idx))))))]))
+
+
+(define (ndarr/transpose m)
+  (local
+    [(define s (ndarr/shape m))]
+    (ndarr/build (list (second s) (first s)) (lambda (i) (ndarr/get (list (second i) (first i)) m)))))
+
+;(check-expect (ndarr/transpose '((1 2) (2 3) (3 4))) '((1 2 3) (2 3 4)))
+
 ;; Takes the dot product of two NdArrs
 ;; ndarr/dot: NdArr NdArr -> Ndarr
 ;; Requires: (first (shape v)) = (first (shape w))
@@ -83,18 +92,20 @@
     [(empty? (rest v)) (ndarr/elementwise * (first v) (first w))] ; Not pretty but I can't broadcast + 0
     [else (ndarr/elementwise + (ndarr/elementwise * (first v) (first w)) (ndarr/dot (rest v) (rest w)))]))
 
-(define (ndarr/vm-mul v m^T)
-  (map (lambda (r) (ndarr/dot v r)) m^T))
+(define (ndarr/mse v1 v2)
+  (/ (foldr (lambda (x y) (ndarr/elementwise + x y))
+            0
+            (map (lambda (a b) (ndarr/map sqr (ndarr/elementwise - a b))) v1 v2)) (length v1)))
 
-(check-expect (ndarr/dot '((1 2) (3 2) (4 5)) '((2 2) (4 4) (0 1))) '(14 17))
+(define (ndarr/vm-mul v m)
+  (map (lambda (r) (ndarr/dot v r)) m))
 
-(check-expect (ndarr/build '(4 4) (lambda (x) (if (< (first x) (second x)) 0 1)))
-              '((1 0 0 0)
-                (1 1 0 0)
-                (1 1 1 0) ; look ma, causal attention mask!
-                (1 1 1 1)))
+(define (ndarr/outer-prod vi vj)
+  (map (lambda (r) (map (lambda (c) (ndarr/elementwise * c r)) vj)) vi))
 
-(check-expect (ndarr/vm-mul '(1 -1 2) '((1 -1 0) (3 -2 1))) '(2 7))
+
+
+
 
 
 ;; Flattens the NdArr
@@ -104,25 +115,30 @@
         [(list? (first t)) (append (ndarr/flatten (first t)) (ndarr/flatten (rest t)))]
         [else (cons (first t) (ndarr/flatten (rest t)))]))
 
-(define A (list (list (list 2 3) (list 7 8) (list 1 9))
-                (list (list 1 9) (list 1 0) (list 3 7))
-                (list (list 1 2) (list 4 3) (list 1 0))))
-(define B (ndarr/fill (list 3 3 2) 1))
-
-(check-expect (ndarr/flatten A) '(2 3 7 8 1 9 1 9 1 0 3 7 1 2 4 3 1 0))
-(check-expect (ndarr/shape A) (list 3 3 2))
-
-(check-expect (ndarr/elementwise + A B) '(((3 4 ) (8 9) (2 10))
-                                          ((2 10) (2 1) (4 8 ))
-                                          ((2 3 ) (5 4) (2 1 ))))
-
-;; Leaf node construction
-(define (tensor/new-param ndarr)
-  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
-
-;; 
-(define (tensor/new-input ndarr)
-  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'input '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+;(check-expect (ndarr/outer-prod '(1 2) '(1 2 3)) '((1 2 3)
+;                                                   (2 4 6)))
+;
+;(check-expect (ndarr/dot '((1 2) (3 2) (4 5)) '((2 2) (4 4) (0 1))) '(14 17))
+;
+;(check-expect (ndarr/build '(4 4) (lambda (x) (if (< (first x) (second x)) 0 1)))
+;              '((1 0 0 0)
+;                (1 1 0 0)
+;                (1 1 1 0) ; look ma, causal attention mask!
+;                (1 1 1 1)))
+;
+;(define A (list (list (list 2 3) (list 7 8) (list 1 9))
+;                (list (list 1 9) (list 1 0) (list 3 7))
+;                (list (list 1 2) (list 4 3) (list 1 0))))
+;(define B (ndarr/fill (list 3 3 2) 1))
+;
+(check-expect (ndarr/vm-mul '(1 -1 2) '((1 -1 0) (3 -2 1))) '(2 7))
+;
+;(check-expect (ndarr/flatten A) '(2 3 7 8 1 9 1 9 1 0 3 7 1 2 4 3 1 0))
+;(check-expect (ndarr/shape A) (list 3 3 2))
+;
+;(check-expect (ndarr/elementwise + A B) '(((3 4 ) (8 9) (2 10))
+;                                          ((2 10) (2 1) (4 8 ))
+;                                          ((2 3 ) (5 4) (2 1 ))))
 
 ;; Tensor functions
 ;; ~~~~~~~~~~
@@ -163,19 +179,39 @@
 (define (tensor/new-presyns t presyns)
   (mk-tensor (tensor/ndarr t) (tensor/grad t) (tensor/prev-op t) presyns (tensor/forward t) (tensor/backward t)))
 
+;; Leaf node construction
+(define (tensor/new-param ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+
+(define (tensor/new-input ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'X '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+
+(define (tensor/new-targ ndarr)
+  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'Y '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+
+
 (define (tensor/param? t)
   (symbol=? 'param (tensor/prev-op t)))
 
 (define (tensor/input? t)
-  (symbol=? 'input (tensor/prev-op t)))
+  (symbol=? 'X (tensor/prev-op t)))
+
+(define (tensor/targ? t)
+  (symbol=? 'Y (tensor/prev-op t)))
+
+(define (tensor/output? t)
+  (symbol=? 'Y-pred (tensor/prev-op t)))
 
 (define (tensor/leaf? t)
   (or (symbol=? 'param (tensor/prev-op t))
-      (symbol=? 'input (tensor/prev-op t))))
+      (symbol=? 'X (tensor/prev-op t))
+      (symbol=? 'Y (tensor/prev-op t))))
 
 (define (tensor/new-ndarr t value)
   (mk-tensor value (tensor/grad t) (tensor/prev-op t) (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
 
+(define (tensor/flag t value)
+  (mk-tensor (tensor/ndarr t) (tensor/grad t) value (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
 
 (define (tensor/add t1 t2)
   (mk-tensor (ndarr/elementwise + (tensor/ndarr t1) (tensor/ndarr t2))
@@ -191,7 +227,7 @@
                             (list t1 t2)
                             (tensor/forward self)
                             (tensor/backward self))))
-             ;; Tensor -> (listof Tensor)
+             ;; Tensor -> (listof Tensor) 
              (lambda (out-t)
                (cond
                  [(tensor/leaf? out-t) out-t]
@@ -201,6 +237,62 @@
                      (define t2 (second (tensor/presyns out-t)))]
                     (tensor/new-presyns out-t (list ((tensor/backward t1) (tensor/new-grad t1 (tensor/grad out-t)))
                                                     ((tensor/backward t2) (tensor/new-grad t2 (tensor/grad out-t))))))]))))
+
+(define (tensor/vm-mul t1 t2)
+  (mk-tensor (ndarr/vm-mul (tensor/ndarr t1) (tensor/ndarr t2))
+             (ndarr/fill (ndarr/shape (ndarr/vm-mul (tensor/ndarr t1) (tensor/ndarr t2))) 0)
+             'vm-mul
+             (list t1 t2)
+             (lambda (self)
+               (local [(define t1 ((tensor/forward (first (tensor/presyns self))) (first (tensor/presyns self))))
+                       (define t2 ((tensor/forward (second (tensor/presyns self))) (second (tensor/presyns self))))]
+                 (mk-tensor (ndarr/vm-mul (tensor/ndarr t1) (tensor/ndarr t2))
+                            (tensor/grad self)
+                            'vm-mul
+                            (list t1 t2)
+                            (tensor/forward self)
+                            (tensor/backward self))))
+             ;; Tensor -> (listof Tensor) 
+             (lambda (out-t)
+               (cond
+                 [(tensor/leaf? out-t) out-t]
+                 [else
+                  (local
+                    [(define v (first (tensor/presyns out-t)))
+                     (define m (second (tensor/presyns out-t)))]
+                    (tensor/new-presyns out-t (list ((tensor/backward v) (tensor/new-grad v (ndarr/vm-mul (tensor/grad out-t) (ndarr/transpose (tensor/ndarr m)))))
+                                                    ((tensor/backward m) (tensor/new-grad m (ndarr/outer-prod (tensor/grad out-t) (tensor/ndarr v)))))))]))))
+
+(define (tensor/mse y-pred y-targ)
+  (mk-tensor (ndarr/mse (tensor/ndarr y-pred) (tensor/ndarr y-targ))
+             (ndarr/fill (ndarr/shape (tensor/ndarr y-targ)) 0)
+             'mse
+             (list (tensor/flag y-pred 'Y-pred) y-targ)
+             (lambda (self)
+               (local [(define t1 ((tensor/forward (first (tensor/presyns self))) (first (tensor/presyns self))))
+                       (define t2 ((tensor/forward (second (tensor/presyns self))) (second (tensor/presyns self))))]
+                 (mk-tensor (ndarr/mse (tensor/ndarr t1) (tensor/ndarr t2))
+                            (tensor/grad self)
+                            'mse
+                            (list t1 t2)
+                            (tensor/forward self)
+                            (tensor/backward self))))
+             ;; Tensor -> (listof Tensor) 
+             (lambda (out-t)
+               (cond
+                 [(tensor/leaf? out-t) out-t]
+                 [else
+                  (local
+                    [(define t1 (first (tensor/presyns out-t)))
+                     (define t2 (second (tensor/presyns out-t)))
+                     (define n (length t1))]
+                    (tensor/new-presyns out-t (list ((tensor/backward t1) (tensor/new-grad t1
+                                                                                          (ndarr/map (lambda (x) (* x (/ 2 n)))
+                                                                                                      (ndarr/elementwise - (tensor/ndarr t1) (tensor/ndarr t2)))))
+                                                    ((tensor/backward t2) (tensor/new-grad t2
+                                                                                          0)))))]))))
+
+
 ;((tensor/backward t1) (tensor/new-grad t1 (ndarr/elementwise + (tensor/grad t1) (tensor/grad out-t))))
 ;((tensor/backward t2) (tensor/new-grad t2 (ndarr/elementwise + (tensor/grad t2) (tensor/grad out-t)))))))]))))
 
@@ -241,7 +333,6 @@
 ;; Optimization functions
 ;; ~~~~~~~~~~
 
-(define optim/loss (lambda (y y-pred) y))
 
 (define (optim/step t step-size)
   (mk-tensor (cond
@@ -258,62 +349,84 @@
 (define (optim/backward t)
   ((tensor/backward t) (tensor/new-grad t (ndarr/fill (ndarr/shape (tensor/ndarr t)) 1))))
 
-;; optim/forward: Tensor NdArr -> Tensor
-(define (optim/forward t input)
-  (local
-    [(define (replace-input t value)
+(define (optim/replace-value t pred? value)
        (cond
-         [(tensor/input? t) (tensor/new-ndarr t value)]
-         [else (tensor/new-presyns t (map (lambda (x) (replace-input x value)) (tensor/presyns t)))]))]
-  ((tensor/forward t) (replace-input t input))))
+         [(pred? t) (tensor/new-ndarr t value)]
+         [else (tensor/new-presyns t (map (lambda (x) (optim/replace-value x pred? value)) (tensor/presyns t)))]))
+
+;; optim/forward: Tensor NdArr -> Tensor
+(define (optim/forward t input target)
+  ((tensor/forward t) (optim/replace-value (optim/replace-value t tensor/input? input) tensor/targ? target)))
 
 
-(define (optim/epoch t step-size dataset)
+(define (optim/epoch t step-size dataset loss-acc)
   (cond
-    [(empty? dataset) t]
+    [(empty? dataset) (list t loss-acc)]
     [else
      (local
        [(define X (first (first dataset)))
-        (define y (second (first dataset)))]
-     (optim/epoch (optim/step (optim/backward (optim/loss (optim/forward t X) y)) step-size) step-size (rest dataset)))]))
+        (define Y (second (first dataset)))
+        (define updated (optim/step (optim/backward (optim/forward t X Y)) step-size))]
+       
+     (optim/epoch updated step-size (rest dataset) (cons (tensor/ndarr updated) loss-acc)))]))
 
-(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
-
-(optim/backward toy-graph)
+;(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
+;(tensor/vm-mul (tensor/new-input '(1 1)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
+(define net (tensor/mse (tensor/vm-mul (tensor/new-input '(1 2)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
+                        (tensor/new-targ '(-1 -1 -1))))
+;net
+;
+;
+(optim/forward net '(1 1) '(0 0 0))
 '------------------------------------------------
-(optim/backward (optim/step (optim/backward toy-graph) 0.01))
+(optim/backward (optim/forward net '(1 1) '(0 0 0)))
 '------------------------------------------------
-(optim/forward (optim/backward (optim/step (optim/backward toy-graph) 0.01)) '((0 0) (0 0)))
+(optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01)
+'------------------------------------------------
+;(optim/backward (optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01))
+'------------------------------------------------
+(optim/forward (optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01) '(1 1) '(0 0 0))
 '------------------------------------------------
 ;(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
 ;'------------------------------------------------
-;(optim/loop toy-graph 100 0.1)
 
-(define random/uniform/precision 1000)
+
+(define random/uniform/precision 10000)
 
 (define (random/uniform a b)
-  (+ a (* (- b a) (/ (random random/uniform/precision) random/uniform/precision))))
+  (+ a (* (- b a) (/ (+ (random random/uniform/precision) 1) random/uniform/precision))))
 
-(define noise/max-drift 0.05)
+(define (random/gaussian mean sd)
+  (+ mean (* sd (sqrt (* 2 (log (random/uniform 0 1)))) (cos (* 2 pi (random/uniform 0 1))))))
+
+(define noise/sd 0.03)
 
 (define (random/add-noise n)
-  (+ n
-     (* 1/2 (random/uniform (- noise/max-drift) noise/max-drift))
-     (* 1/2 (random/uniform (- noise/max-drift) noise/max-drift))))
+  (+ n (random/gaussian 0 noise/sd)))
+
+(define (data/synthesize-batch n)
+  (local
+    [(define (loop n acc-x acc-y)
+       (cond
+         [(zero? n) (list acc-x acc-y)]
+         [else (local
+                 [(define X_x (random/uniform -1 1))
+                  (define X_y (random/uniform -1 1))
+                  (define Y (cond
+                              ;; VERY non-linear
+                              [(and (not (zero? X_x)) (< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x))))))) 1]
+                              [else -1]))]
+                 (loop (sub1 n)
+                       (cons (list (random/add-noise X_x) (random/add-noise X_y)) acc-x)
+                       (cons (list Y) acc-y)))]))]
+    (loop n empty empty)))
 
 (define (data/synthesize n)
-  (local
-    [(define (loop n acc)
-       (cond
-         [(zero? n) acc]
-         [else (loop (sub1 n) (cons (local
-                                      [(define X_x (random/uniform -1 1))
-                                       (define X_y (random/uniform -1 1))
-                                       (define Y (cond
-                                                   ;; VERY non-linear
-                                                   [(< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x)))))) 1]
-                                                   [else -1]))]
-                                      (list (list (random/add-noise X_x) (random/add-noise X_y)) Y)) acc))]))]
-    (loop n empty)))
-;(define train-set (data/synthesize 900))
-;(define test-set (data/synthesize 100))
+  (build-list n (lambda (_) (data/synthesize-batch 16))))
+(define train-set (data/synthesize 90))
+;(define test-set (data/synthesize 10))
+
+(define model (tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
+                        (tensor/new-targ '(0))))
+
+(optim/epoch model 0.03 train-set empty)
