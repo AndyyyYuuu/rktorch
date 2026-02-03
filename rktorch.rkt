@@ -13,11 +13,14 @@
     [(zero? n) (first lst)]
     [else (list/nth (sub1 n) (rest lst))]))
 
+(define (list/mean lst)
+  (/ (foldr + 0 lst) (length lst)))
 ;; NdArr processing functions
 ;; ~~~~~~~~~~
 
 ;; For simplicity, I think we're gonna use the
 ;; innermost / last dimension as the batch dimension.
+;; Actually, never mind, let's not batch around. 
 
 ;; An NdArr is one of
 ;; * Num
@@ -107,7 +110,8 @@
 
 
 
-
+(check-expect (ndarr/vm-mul '(1 2) '((2 3) (0 0) (1 1)))
+               '(8 0 3))
 
 ;; Flattens the NdArr
 ;; ndarr/flatten: NdArr -> NdArr
@@ -150,7 +154,7 @@
 ;; A Tensor is a (listof NdArr NdArr Op (listof Tensor) Tensor ())
 
 (define (mk-tensor ndarr grad prev-op presyns forward backward)
-  (cond [(and (symbol? prev-op) (list? presyns) (or (empty? presyns) (and (list? (first presyns)) (list? (second presyns)))))
+  (cond [(and (symbol? prev-op) (list? presyns) (or (empty? presyns) (and (list? (first presyns)) (empty? (rest presyns))) (and (list? (first presyns)) (list? (second presyns)))))
          (list ndarr grad prev-op presyns forward backward)]))
 
 (define (tensor/copy t)
@@ -300,19 +304,29 @@
 
 ;((tensor/backward t1) (tensor/new-grad t1 (tensor/grad out-t)))
 ;((tensor/backward t2) (tensor/new-grad t2 (tensor/grad out-t))))))]))))
-;(define (tensor/tanh t)
-;  (mk-tensor (ndarr/map tanh (tensor/ndarr t)) 
-;             (ndarr/fill (ndarr/shape (tensor/ndarr t)) 0)
-;             'tanh
-;             (list t)
-;             ;; Tensor -> (listof Tensor)
-;             (lambda (out-t)
-;               (cond
-;                 [(tensor/leaf? out-t) out-t]
-;                 [else
-;                  (local
-;                    [(define t (first (tensor/presyns out-t)))]
-;                    (tensor/new-presyns out-t (list ((tensor/backward t) (tensor/new-grad t (ndarr/map tanh-deriv (tensor/grad out-t)))))))]))))
+(define (tensor/tanh t)
+  (mk-tensor (ndarr/map tanh (tensor/ndarr t)) 
+             (ndarr/fill (ndarr/shape (tensor/ndarr t)) 0)
+             'tanh
+             (list t)
+             
+             (lambda (self)
+                  (local
+                    [(define t ((tensor/forward (first (tensor/presyns self))) (first (tensor/presyns self))))]
+                    (mk-tensor (map tanh (tensor/ndarr t))
+                            (tensor/grad self)
+                            'tanh
+                            (list t)
+                            (tensor/forward self)
+                            (tensor/backward self))))
+             ;; Tensor -> (listof Tensor)
+             (lambda (out-t)
+               (cond
+                 [(tensor/leaf? out-t) out-t]
+                 [else
+                  (local
+                    [(define t (first (tensor/presyns out-t)))]
+                    (tensor/new-presyns out-t (list ((tensor/backward t) (tensor/new-grad t (ndarr/map tanh-deriv (tensor/grad out-t)))))))]))))
 ;
 ;
 ;(define (tensor/mul t1 t2)
@@ -372,6 +386,30 @@
        
      (optim/epoch updated step-size (rest dataset) (cons (tensor/ndarr updated) loss-acc)))]))
 
+(define (optim/eval t test-set)
+  (local
+    [(define (loop test-set loss-acc)
+       (cond
+         [(empty? test-set) (list/mean loss-acc)]
+         [else (local
+                 [(define X (first (first test-set)))
+                  (define Y (second (first test-set)))]
+                 (loop (rest test-set)
+                       (cons (tensor/ndarr (optim/forward t X Y)) loss-acc)))]))]
+  (loop test-set empty)))
+
+;; optim/epochs: Nat Tensor Num (listof (list NdArr NdArr)) (listof (list NdArr NdArr)) empty -> (list Tensor (listof Num))
+(define (optim/epochs n t step-size train-set test-set train-loss-acc test-loss-acc)
+  (cond
+    [(zero? n) (list t train-loss-acc test-loss-acc)]
+    [else (local
+            [(define out (optim/epoch t step-size train-set empty))
+             (define new-t (first out))
+             (define train-losses (second out))]
+     (optim/epochs (sub1 n) new-t step-size train-set test-set
+                   (cons (list/mean train-losses) train-loss-acc)
+                   (cons (optim/eval t test-set) train-loss-acc)))]))
+
 ;(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
 ;(tensor/vm-mul (tensor/new-input '(1 1)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
 (define net (tensor/mse (tensor/vm-mul (tensor/new-input '(1 2)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
@@ -410,7 +448,7 @@
   (local
     [(define (loop n acc-xx acc-xy acc-y)
        (cond
-         [(zero? n) (list acc-x acc-y)]
+         [(zero? n) (list acc-xx acc-xy acc-y)]
          [else (local
                  [(define X_x (random/uniform -1 1))
                   (define X_y (random/uniform -1 1))
@@ -424,13 +462,27 @@
                        (cons Y acc-y)))]))]
     (loop n empty empty empty)))
 
+(define (data/synthesize-item _)
+  (local
+    [(define X_x (random/uniform -1 1))
+     (define X_y (random/uniform -1 1))
+     (define Y (cond
+                 ;; VERY non-linear
+                 [(and (not (zero? X_x)) (< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x))))))) 1]
+                 [else -1]))]
+    (list (list X_x X_y) (list Y))))
+                 
+
 (define (data/synthesize n)
-  (build-list n (lambda (_) (data/synthesize-batch 1))))
+  (build-list n (lambda (_) (data/synthesize-item 0))))
 (define train-set (data/synthesize 10))
-;(define test-set (data/synthesize 10))
+(define test-set (data/synthesize 10))
 train-set
-(define model (tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
-                        (tensor/new-targ 0))) ; we're gonna need broadcasting for this kind of batch processing
+;(tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
+;(tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
+;            (tensor/new-targ '(0)))
+(define model (tensor/mse (tensor/tanh (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2)))))
+                        (tensor/new-targ '(0)))) ; we're gonna need broadcasting for this kind of batch processing
 model
 ;(optim/forward model '(#i0.8149676128848764
 ;     #i0.5999207590704589
@@ -440,4 +492,8 @@ model
 ;     #i0.7887930213363239
 ;     #i0.4116878432048962
 ;     #i-0.43814750294244836) '(1 -1 -1 -1 1 1 -1 -1))
-(optim/epoch model 0.03 train-set empty)
+'=================
+"Optimization Results_Below"
+"Remember, the loss lists are backwards"
+'=================
+(optim/epochs 50 model 0.05 train-set test-set empty empty)
