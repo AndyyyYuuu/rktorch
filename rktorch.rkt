@@ -1,6 +1,11 @@
 ;; The first three lines of this file were inserted by DrRacket. They record metadata
 ;; about the language level of this file in a form that our tools can easily process.
-#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname rktorch) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t quasiquote repeating-decimal #f #t none #f () #f)))
+#reader(lib "htdp-advanced-reader.ss" "lang")((modname rktorch) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #t #t none #f () #f)))
+;; TRAINABLE TOY NEURAL NETWORK
+;; Andy Yu
+
+;; A few basic operations
+;; ~~~~~~~~~~
 
 (define (tanh x)
   (/ (- 1 (exp (* -2 x))) (+ 1 (exp (* -2 x)))))
@@ -16,6 +21,8 @@
 (define (list/mean lst)
   (/ (foldr + 0 lst) (length lst)))
 
+;; Random number functions
+;; ~~~~~~~~~~
 
 (define random/uniform/precision 10000)
 
@@ -202,7 +209,7 @@
 
 ;; Leaf node construction
 (define (tensor/new-param ndarr)
-  (mk-tensor (ndarr/build (ndarr/shape ndarr) (lambda (_) (random/gaussian 0 1))) (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+  (mk-tensor (ndarr/build (ndarr/shape ndarr) (lambda (_) (random/gaussian 0 0.2))) (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
 
 (define (tensor/new-input ndarr)
   (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'X '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
@@ -233,6 +240,10 @@
 
 (define (tensor/flag t value)
   (mk-tensor (tensor/ndarr t) (tensor/grad t) value (tensor/presyns t) (tensor/forward t) (tensor/backward t)))
+
+
+;; Differentiable Tensor Functions
+;; ~~~~~~~~~~
 
 (define (tensor/add t1 t2)
   (mk-tensor (ndarr/elementwise + (tensor/ndarr t1) (tensor/ndarr t2))
@@ -433,26 +444,9 @@
                                                             train-loss-acc
                                                             test-loss-acc)]))]))
 
-;(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
-;(tensor/vm-mul (tensor/new-input '(1 1)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
-(define net (tensor/mse (tensor/vm-mul (tensor/new-input '(1 2)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
-                        (tensor/new-targ '(-1 -1 -1))))
-;net
-;
-;
-(optim/forward net '(1 1) '(0 0 0))
-'------------------------------------------------
-(optim/backward (optim/forward net '(1 1) '(0 0 0)))
-'------------------------------------------------
-(optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01)
-'------------------------------------------------
-;(optim/backward (optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01))
-'------------------------------------------------
-(optim/forward (optim/step (optim/backward (optim/forward net '(1 1) '(0 0 0))) 0.01) '(1 1) '(0 0 0))
-'------------------------------------------------
-;(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
-;'------------------------------------------------
 
+;; Data synthesis functions
+;; ~~~~~~~~~~
 
 (define (data/synthesize-batch n)
   (local
@@ -481,25 +475,54 @@
                  [(and (not (zero? X_x)) (< (/ X_y X_x) (tan (sqrt (+ (sqr (* pi X_y)) (sqr (* pi X_x))))))) 1]
                  [else -1]))]
     (list (list X_x X_y) (list Y))))
-                 
+
 
 (define (data/synthesize n)
   (build-list n (lambda (_) (data/synthesize-item 0))))
-(define train-set (data/synthesize 64))
-(define test-set (data/synthesize 64))
-train-set
+(define train-set (data/synthesize 160))
+(define test-set (data/synthesize 40))
 ;(tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
 ;(tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
 ;            (tensor/new-targ '(0)))
-(define model (tensor/mse (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/new-input '(0.1 0.1))
-                                                                     (tensor/new-param '((0.1 0.2) (0.1 0) (0 0) (0 0)))))
-                                                      (tensor/new-param '((0 0 0 0) (0 0 0.1 0) (0 0.2 0 0)))))
-                                         (tensor/new-param '((0 0 0)))))
-                        (tensor/new-targ '(0))))
-model
 
-'=================
-"Optimization Results_Below"
-"Remember, the loss lists are backwards"
-'=================
-(optim/epochs 2000 model 0.5 train-set test-set empty empty)
+;(define model (tensor/mse (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/new-input '(0.1 0.1))
+;                                                                                                              (tensor/new-param '((0.1 0.2) (0.1 0) (0 0) (0 0)))))
+;                                                                                  (tensor/new-param '((0 0 0 0) (0 0 0.1 0) (0 0.2 0 0)))))
+;                                                      (tensor/new-param '((0 0 0)))))
+;                          (tensor/new-targ '(0))))
+
+
+;; nn/linear: Tensor Nat -> Tensor
+(define (nn/linear inp-t out-size)
+  (tensor/add (tensor/vm-mul inp-t
+                             (tensor/new-param (ndarr/fill (list out-size
+                                                                 (first (ndarr/shape (tensor/ndarr inp-t))))
+                                                           0)))
+              (tensor/new-param (ndarr/fill (list out-size) 0))))
+
+(define (nn/mlp sizes act_fn input)
+  (cond
+    [(empty? sizes) input]
+    [else (nn/mlp (rest sizes) act_fn (act_fn (nn/linear input (first sizes))))]))
+
+(define model (nn/mlp '(4 3 1) tensor/tanh (tensor/new-input '(0 0))))
+(define loss (tensor/mse model (tensor/new-targ '(0))))
+
+'Training...
+
+(define results (optim/epochs 256 loss 0.3 train-set test-set empty empty))
+
+'==============================================================
+"New model + loss function"
+'-----------------
+(first results)
+'
+'==============================================================
+"Train loss (in reverse order)"
+'-----------------
+(second results)
+'
+'==============================================================
+"Validation loss (in reverse order)"
+'-----------------
+(third results)
