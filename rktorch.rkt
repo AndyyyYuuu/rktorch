@@ -15,6 +15,21 @@
 
 (define (list/mean lst)
   (/ (foldr + 0 lst) (length lst)))
+
+
+(define random/uniform/precision 10000)
+
+(define (random/uniform a b)
+  (+ a (* (- b a) (/ (+ (random random/uniform/precision) 1) random/uniform/precision))))
+
+(define (random/gaussian mean sd)
+  (+ mean (* sd (sqrt (* -2 (log (random/uniform 0 1)))) (cos (* 2 pi (random/uniform 0 1))))))
+
+(define noise/sd 0.03)
+
+(define (random/add-noise n)
+  (+ n (random/gaussian 0 noise/sd)))
+
 ;; NdArr processing functions
 ;; ~~~~~~~~~~
 
@@ -187,7 +202,7 @@
 
 ;; Leaf node construction
 (define (tensor/new-param ndarr)
-  (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
+  (mk-tensor (ndarr/build (ndarr/shape ndarr) (lambda (_) (random/gaussian 0 1))) (ndarr/fill (ndarr/shape ndarr) 0) 'param '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
 
 (define (tensor/new-input ndarr)
   (mk-tensor ndarr (ndarr/fill (ndarr/shape ndarr) 0) 'X '() (lambda (self) (tensor/copy self)) (lambda (x) x)))
@@ -313,7 +328,7 @@
              (lambda (self)
                   (local
                     [(define t ((tensor/forward (first (tensor/presyns self))) (first (tensor/presyns self))))]
-                    (mk-tensor (map tanh (tensor/ndarr t))
+                    (mk-tensor (ndarr/map tanh (tensor/ndarr t))
                             (tensor/grad self)
                             'tanh
                             (list t)
@@ -326,7 +341,9 @@
                  [else
                   (local
                     [(define t (first (tensor/presyns out-t)))]
-                    (tensor/new-presyns out-t (list ((tensor/backward t) (tensor/new-grad t (ndarr/map tanh-deriv (tensor/grad out-t)))))))]))))
+                    (tensor/new-presyns out-t (list ((tensor/backward t)
+                                                     (tensor/new-grad t (ndarr/elementwise * (ndarr/map tanh-deriv (tensor/ndarr t)) (tensor/grad out-t)))))))]))))
+                    ;(tensor/new-presyns out-t (list ((tensor/backward t) (tensor/new-grad t (ndarr/map tanh-deriv (tensor/grad out-t)))))))]))))
 ;
 ;
 ;(define (tensor/mul t1 t2)
@@ -398,6 +415,8 @@
                        (cons (tensor/ndarr (optim/forward t X Y)) loss-acc)))]))]
   (loop test-set empty)))
 
+(define log-every-n-epochs 10)
+
 ;; optim/epochs: Nat Tensor Num (listof (list NdArr NdArr)) (listof (list NdArr NdArr)) empty -> (list Tensor (listof Num))
 (define (optim/epochs n t step-size train-set test-set train-loss-acc test-loss-acc)
   (cond
@@ -406,9 +425,13 @@
             [(define out (optim/epoch t step-size train-set empty))
              (define new-t (first out))
              (define train-losses (second out))]
-     (optim/epochs (sub1 n) new-t step-size train-set test-set
-                   (cons (list/mean train-losses) train-loss-acc)
-                   (cons (optim/eval t test-set) train-loss-acc)))]))
+            (cond
+              [(zero? (remainder n log-every-n-epochs)) (optim/epochs (sub1 n) new-t step-size train-set test-set
+                                                            (cons (list/mean train-losses) train-loss-acc)
+                                                            (cons (optim/eval t test-set) test-loss-acc))]
+              [else (optim/epochs (sub1 n) new-t step-size train-set test-set
+                                                            train-loss-acc
+                                                            test-loss-acc)]))]))
 
 ;(define toy-graph (tensor/add (tensor/new-input '((0.1 -0.3) (0.5 0.3))) (tensor/new-param '((0.3 0.1) (-0.2 0.0)))))
 ;(tensor/vm-mul (tensor/new-input '(1 1)) (tensor/new-param '((0.1 0.2) (0.1 0.1) (0.1 0.1))))
@@ -430,19 +453,6 @@
 ;(optim/step (optim/backward (optim/step (optim/backward toy-graph) 0.01)) 0.01)
 ;'------------------------------------------------
 
-
-(define random/uniform/precision 10000)
-
-(define (random/uniform a b)
-  (+ a (* (- b a) (/ (+ (random random/uniform/precision) 1) random/uniform/precision))))
-
-(define (random/gaussian mean sd)
-  (+ mean (* sd (sqrt (* -2 (log (random/uniform 0 1)))) (cos (* 2 pi (random/uniform 0 1))))))
-
-(define noise/sd 0.03)
-
-(define (random/add-noise n)
-  (+ n (random/gaussian 0 noise/sd)))
 
 (define (data/synthesize-batch n)
   (local
@@ -475,25 +485,21 @@
 
 (define (data/synthesize n)
   (build-list n (lambda (_) (data/synthesize-item 0))))
-(define train-set (data/synthesize 10))
-(define test-set (data/synthesize 10))
+(define train-set (data/synthesize 64))
+(define test-set (data/synthesize 64))
 train-set
 ;(tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
 ;(tensor/mse (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2))))
 ;            (tensor/new-targ '(0)))
-(define model (tensor/mse (tensor/tanh (tensor/vm-mul (tensor/new-input '(0 0)) (tensor/new-param '((0.1 0.2)))))
-                        (tensor/new-targ '(0)))) ; we're gonna need broadcasting for this kind of batch processing
+(define model (tensor/mse (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/tanh (tensor/vm-mul (tensor/new-input '(0.1 0.1))
+                                                                     (tensor/new-param '((0.1 0.2) (0.1 0) (0 0) (0 0)))))
+                                                      (tensor/new-param '((0 0 0 0) (0 0 0.1 0) (0 0.2 0 0)))))
+                                         (tensor/new-param '((0 0 0)))))
+                        (tensor/new-targ '(0))))
 model
-;(optim/forward model '(#i0.8149676128848764
-;     #i0.5999207590704589
-;     #i0.8442857419868902
-;     #i0.7682431672814628
-;     #i-0.9443673067317068
-;     #i0.7887930213363239
-;     #i0.4116878432048962
-;     #i-0.43814750294244836) '(1 -1 -1 -1 1 1 -1 -1))
+
 '=================
 "Optimization Results_Below"
 "Remember, the loss lists are backwards"
 '=================
-(optim/epochs 50 model 0.05 train-set test-set empty empty)
+(optim/epochs 2000 model 0.5 train-set test-set empty empty)
